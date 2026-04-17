@@ -47,12 +47,8 @@
     playTime: document.getElementById("playTimeValue"),
     life: document.getElementById("lifeValue"),
     power: document.getElementById("powerValue"),
-    powerPoint: document.getElementById("powerPointValue"),
     graze: document.getElementById("grazeValue"),
-    lifeIcon: document.getElementById("lifeIconValue"),
     bossHp: document.getElementById("bossHpValue"),
-    phase: document.getElementById("phaseValue"),
-    status: document.getElementById("statusValue"),
     logList: document.getElementById("logList"),
     ctlMove: document.getElementById("ctlMove"),
     ctlFocus: document.getElementById("ctlFocus"),
@@ -104,6 +100,10 @@
       grazeLockUntil: 0,
     },
     enemySpawnCd: 0,
+    postDeathEaseUntil: 0,
+    noHitTimer: 0,
+    noHitMilestone: 0,
+    waveSpeedBoost: false,
     normalEnemies: [],
     boss: null,
     bossStartTime: 0,
@@ -330,6 +330,10 @@
       state.powerPoint = 0;
       state.grazeGauge = 0;
       state.enemySpawnCd = 0;
+      state.postDeathEaseUntil = 0;
+      state.noHitTimer = 0;
+      state.noHitMilestone = 0;
+      state.waveSpeedBoost = false;
       state.phase = 1;
       state.phaseEnraged = false;
       state.phaseStartTime = 0;
@@ -482,14 +486,31 @@
   }
 
   function spawnEnemy() {
+    const profile = getStageProfile(state.time);
+    const speedBoost = state.waveSpeedBoost ? 1.1 : 1;
     state.normalEnemies.push({
       x: 120 + Math.random() * (FIELD_WIDTH - 240),
       y: -20,
       hp: 30,
       bodyR: 20,
       shotCd: 0.65 + Math.random() * 0.4,
-      speed: 80 + Math.random() * 40,
+      speed: (80 + Math.random() * 40) * (profile.bulletSpeed / 160),
+      bulletSpeed: profile.bulletSpeed * speedBoost,
+      dropRate: profile.dropRate,
     });
+  }
+
+  function getStageProfile(timeSec) {
+    if (timeSec < 60) {
+      return { spawnInterval: 2.0, maxEnemies: 3, bulletSpeed: 160, dropRate: 0.35 };
+    }
+    if (timeSec < 120) {
+      return { spawnInterval: 1.6, maxEnemies: 4, bulletSpeed: 190, dropRate: 0.28 };
+    }
+    if (timeSec < 180) {
+      return { spawnInterval: 1.2, maxEnemies: 5, bulletSpeed: 220, dropRate: 0.2 };
+    }
+    return { spawnInterval: 0.9, maxEnemies: 6, bulletSpeed: 250, dropRate: 0.15 };
   }
 
   function spawnBoss() {
@@ -611,11 +632,10 @@
 
   function activateFormat() {
     if (state.grazeGauge < 100) return;
-    if (state.time < state.format.grazeLockUntil) return;
 
     state.grazeGauge = 0;
     state.format.activeUntil = state.time + 2;
-    state.format.grazeLockUntil = state.time + 5;
+    state.format.grazeLockUntil = Math.max(state.format.grazeLockUntil, state.format.activeUntil + 2);
     state.player.invUntil = Math.max(state.player.invUntil, state.format.activeUntil);
     transformAllBulletsToItems();
 
@@ -643,6 +663,11 @@
     if (state.time < state.player.invUntil) return;
     state.life = Math.max(0, state.life - 1);
     state.grazeGauge = 0;
+    state.format.grazeLockUntil = Math.max(state.format.grazeLockUntil, state.time + 5);
+    state.postDeathEaseUntil = state.time + 10;
+    state.noHitTimer = 0;
+    state.noHitMilestone = 0;
+    state.waveSpeedBoost = false;
     state.player.x = FIELD_WIDTH * 0.5;
     state.player.y = FIELD_HEIGHT - 120;
     state.player.invUntil = state.time + 3;
@@ -683,21 +708,25 @@
   }
 
   function update(dt) {
-    if (!state.gameStarted) {
-      ui.status.textContent = "Title";
-      return;
-    }
+    if (!state.gameStarted) return;
 
-    if (state.paused) {
-      ui.status.textContent = "Paused";
-      return;
-    }
+    if (state.paused) return;
 
     if (state.life <= 0) {
       return;
     }
 
     state.time += dt;
+    state.noHitTimer += dt;
+    while (state.noHitTimer >= 30) {
+      state.noHitTimer -= 30;
+      state.noHitMilestone += 1;
+      if (state.noHitMilestone >= 2 && !state.waveSpeedBoost) {
+        state.waveSpeedBoost = true;
+        addLog("No-hit chain complete. Next waves get +10% bullet speed.");
+      }
+    }
+
     const p = state.player;
 
     const wasPhase = state.phase;
@@ -721,12 +750,21 @@
     }
 
     state.enemySpawnCd -= dt;
-    if (state.time < 25 && state.enemySpawnCd <= 0) {
-      state.enemySpawnCd = 0.6;
-      spawnEnemy();
+    if (!state.boss && state.time < 195 && state.enemySpawnCd <= 0) {
+      const profile = getStageProfile(state.time);
+      let spawnInterval = profile.spawnInterval;
+      if (state.time < state.postDeathEaseUntil) {
+        spawnInterval += 0.3;
+      }
+
+      if (state.normalEnemies.length < profile.maxEnemies) {
+        spawnEnemy();
+      }
+
+      state.enemySpawnCd = spawnInterval;
     }
 
-    if (!state.boss && state.time > 25) {
+    if (!state.boss && state.time >= 195) {
       spawnBoss();
     }
 
@@ -736,7 +774,8 @@
       e.shotCd -= dt;
       if (e.shotCd <= 0) {
         e.shotCd = 1.1;
-        enemyShootAtPlayer(e, 240 + Math.random() * 50);
+        const ease = state.time < state.postDeathEaseUntil ? 0.85 : 1;
+        enemyShootAtPlayer(e, (e.bulletSpeed + Math.random() * 30) * ease);
       }
       if (e.y > FIELD_HEIGHT + 50 || e.hp <= 0) {
         if (e.hp <= 0) {
@@ -746,7 +785,7 @@
             it.y = e.y;
             it.vx = 0;
             it.vy = 70;
-            it.kind = "power";
+            it.kind = Math.random() < e.dropRate && state.time < 195 ? "power" : "score";
             it.attract = false;
           });
         }
@@ -867,24 +906,12 @@
       }
     }
 
-    if (state.time <= state.format.activeUntil) {
-      ui.status.textContent = "Formatting";
-    } else if (state.time <= state.format.grazeLockUntil) {
-      ui.status.textContent = "Graze Locked";
-    } else if (state.phaseEnraged) {
-      ui.status.textContent = "Enrage";
-    } else {
-      ui.status.textContent = "Engage";
-    }
     ui.highScore.textContent = String(state.bestScore);
     ui.score.textContent = String(state.score);
     ui.playTime.textContent = formatTime(state.time);
     ui.life.textContent = String(state.life);
-    ui.lifeIcon.textContent = "●".repeat(state.life) || "-";
     ui.power.textContent = String(powerLevel());
-    ui.powerPoint.textContent = String(state.powerPoint);
     ui.graze.textContent = `${Math.floor(state.grazeGauge)}%`;
-    ui.phase.textContent = state.boss ? `${state.phase}${state.phaseEnraged ? " (ENRAGE)" : ""}` : "-";
     ui.bossHp.textContent = state.boss
       ? `${Math.max(0, Math.floor(state.boss.hp))} (${Math.ceil((state.boss.hp / BOSS_MAX_HP) * BOSS_SEGMENTS)}/${BOSS_SEGMENTS})`
       : "-";
