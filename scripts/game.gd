@@ -24,9 +24,7 @@ const BOSS_ADD_SPAWN_INTERVAL := 2.4
 const BOSS_LAST_SEGMENT := 1
 const BOSS_BULLET_HOMING := 0.06
 
-const BOSS_INTRO_VIDEO_PATH := "res://보스 등장.mp4"
-const BOSS_INTRO_FALLBACK_IMAGE_PATH := "res://보스 스탠딩일러.jpg"
-const BOSS_INTRO_FALLBACK_DURATION := 2.6
+const TEX_BG := "res://배경.png"
 
 const PLAYER_SHOT_SFX_CANDIDATES := [
 	"res://공격 효과음.mp3",
@@ -35,6 +33,15 @@ const PLAYER_SHOT_SFX_CANDIDATES := [
 const PLAYER_SHOT_SFX_MIN_INTERVAL := 0.12
 
 const ENEMY_POST_FIRE_HANG := 0.65
+
+const ENEMY_PATTERN_ADD_AIMED := 0
+const ENEMY_PATTERN_ADD_FAN := 1
+const ENEMY_PATTERN_ADD_RING := 2
+const ENEMY_PATTERN_AIMED := 10
+const ENEMY_PATTERN_FAN := 11
+const ENEMY_PATTERN_RING := 12
+const ENEMY_PATTERN_SPIRAL := 13
+const ENEMY_PATTERN_CROSS := 14
 
 const WAVE_1_END := 40.0
 const WAVE_2_END := 80.0
@@ -99,7 +106,7 @@ const FORMAT_FLASH_ALPHA := 0.35
 const HUD_PANEL_SIZE := Vector2(430, 150)
 const HUD_PANEL_X := 24.0
 const HUD_PANEL_Y := 40.0
-const HUD_PANEL_GAP := 22.0
+const HUD_PANEL_GAP := 34.0
 const HUD_TITLE_FS := 22
 const HUD_VALUE_FS := 38
 const HUD_ICON_SIZE := 44.0
@@ -135,8 +142,8 @@ class GameState:
 	var fullscreen := false
 	var settings_from := "title"
 	var format_flash_until := 0.0
-	var boss_intro_playing := false
-	var boss_intro_until := 0.0
+	var hp_score_next := 0
+	var hp_score_step := 0
 
 class Bullet:
 	var active := false
@@ -167,6 +174,11 @@ class Enemy:
 	var attack_time := 2.4
 	var pattern := 0
 	var fired := false
+	var repeat_left := 0
+	var repeat_cd := 0.0
+	var repeat_interval := 1.0
+	var spiral_angle := 0.0
+	var fixed_dir := Vector2.DOWN
 
 class Boss:
 	var pos := Vector2.ZERO
@@ -221,6 +233,7 @@ var tex_hp_on: Texture2D = null
 var tex_hp_off: Texture2D = null
 var tex_lv_on: Texture2D = null
 var tex_lv_off: Texture2D = null
+var tex_bg: Texture2D = null
 
 var player_frames: Array[Texture2D] = []
 var boss_idle_frames: Array[Texture2D] = []
@@ -252,10 +265,6 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	if state.paused:
 		return
-	if state.boss_intro_playing:
-		_update_boss_intro(delta)
-		queue_redraw()
-		return
 
 	player_anim_t += delta
 
@@ -272,6 +281,9 @@ func _process(delta: float) -> void:
 
 func _draw() -> void:
 	draw_rect(FIELD_RECT, COLOR_FIELD)
+	if tex_bg != null:
+		var center := FIELD_RECT.position + FIELD_RECT.size * 0.5
+		_draw_tex_cover(tex_bg, center, FIELD_RECT.size)
 	draw_rect(FIELD_RECT, COLOR_LINE, false, 2.0)
 
 	for b in player_bullets:
@@ -327,6 +339,7 @@ func _load_textures() -> void:
 	tex_hp_off = load(TEX_ICON_HP_OFF) as Texture2D
 	tex_lv_on = load(TEX_ICON_LV_ON) as Texture2D
 	tex_lv_off = load(TEX_ICON_LV_OFF) as Texture2D
+	tex_bg = load(TEX_BG) as Texture2D
 
 	player_frames = _split_sheet_columns(tex_lumi_sheet, 5)
 	boss_idle_frames = _split_sheet_columns(tex_boss_idle_sheet, 5)
@@ -357,6 +370,19 @@ func _draw_tex_centered(tex: Texture2D, pos: Vector2, desired_height: float) -> 
 	if sz.y <= 0:
 		return
 	var scale := desired_height / float(sz.y)
+	draw_set_transform(pos, 0.0, Vector2(scale, scale))
+	draw_texture(tex, -sz * 0.5)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+func _draw_tex_cover(tex: Texture2D, pos: Vector2, desired_size: Vector2) -> void:
+	if tex == null:
+		return
+	var sz: Vector2 = Vector2(tex.get_size())
+	if sz.x <= 0.0 or sz.y <= 0.0:
+		return
+	var scale_x := desired_size.x / sz.x
+	var scale_y := desired_size.y / sz.y
+	var scale := maxf(scale_x, scale_y)
 	draw_set_transform(pos, 0.0, Vector2(scale, scale))
 	draw_texture(tex, -sz * 0.5)
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
@@ -483,14 +509,14 @@ func _build_ui() -> void:
 	ui_layer.add_child(hud)
 
 	var left_panel := ColorRect.new()
-	left_panel.color = Color(0.02, 0.05, 0.09, 0.85)
+	left_panel.color = Color(0.02, 0.05, 0.09, 1.0)
 	left_panel.size = Vector2(480, 1080)
 	left_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hud.add_child(left_panel)
 
 
 	var right_panel := ColorRect.new()
-	right_panel.color = Color(0.02, 0.05, 0.09, 0.85)
+	right_panel.color = Color(0.02, 0.05, 0.09, 1.0)
 	right_panel.size = Vector2(480, 1080)
 	right_panel.position = Vector2(1440, 0)
 	right_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -583,7 +609,6 @@ func _build_ui() -> void:
 	])
 
 	ui["settings_overlay"] = _make_settings_overlay(ui_layer)
-	ui["boss_intro_overlay"] = _make_boss_intro_overlay(ui_layer)
 
 
 func _make_value_panel(parent: Control, bg_tex: Texture2D, title_text: String, value_text: String, title_color: Color) -> Label:
@@ -689,7 +714,7 @@ func _make_power_panel(parent: Control) -> void:
 	icons.add_theme_constant_override("separation", 10)
 	panel.add_child(icons)
 
-	var display_max := 6
+	var display_max := 5
 	for i in range(display_max):
 		var icon := TextureRect.new()
 		icon.texture = tex_lv_off
@@ -1080,8 +1105,8 @@ func _reset_state() -> void:
 	state.wave_phase = 1
 	state.wave_count = 0
 	state.format_flash_until = 0.0
-	state.boss_intro_playing = false
-	state.boss_intro_until = 0.0
+	state.hp_score_next = 0
+	state.hp_score_step = 0
 
 	player.pos = Vector2(FIELD_RECT.position.x + FIELD_RECT.size.x * 0.5, FIELD_RECT.size.y - 150)
 	player.shoot_cd = 0.0
@@ -1093,7 +1118,6 @@ func _reset_state() -> void:
 	boss_anim_t = 0.0
 	boss_stun_until = 0.0
 	boss_death_playing = false
-	_stop_boss_intro()
 	player_facing = Facing.DOWN
 	player_anim_t = 0.0
 	_release_pool(player_bullets)
@@ -1211,11 +1235,11 @@ func _shot_angles(level: int) -> Array:
 			# Straight + slight curves left/right.
 			return [-12.0, 0.0, 12.0]
 		4:
-			# Two straight + two curved.
-			return [0.0, 0.0, -12.0, 12.0]
+			# Clean 4-way spread.
+			return [-10.0, -4.0, 4.0, 10.0]
 		5:
-			# One center straight, two left and two right separated.
-			return [-30.0, -15.0, 0.0, 15.0, 30.0]
+			# Tight 5-way for stable feel at max level.
+			return [-12.0, -6.0, 0.0, 6.0, 12.0]
 		_:
 			return [0.0]
 
@@ -1301,9 +1325,8 @@ func _update_items(delta: float) -> void:
 			it.active = false
 
 func _update_enemies(delta: float) -> void:
-	if state.time >= ENEMY_WAVE_TIME and boss == null and not state.boss_intro_playing:
-		_start_boss_intro()
-		return
+	if state.time >= ENEMY_WAVE_TIME and boss == null:
+		_spawn_boss()
 
 	# Continuous spawns from start until boss defeat (result screen pauses processing).
 	# Do not spawn during boss death animation.
@@ -1312,12 +1335,12 @@ func _update_enemies(delta: float) -> void:
 		if state.enemy_spawn_cd <= 0.0:
 			var boss_mode := boss != null
 			state.enemy_spawn_cd = _enemy_spawn_interval(boss_mode)
-			_spawn_attack_enemy(boss_mode)
-			# Occasionally spawn an extra attacker for variety.
-			if boss_mode and rng.randf() < 0.35:
+			if boss_mode:
 				_spawn_attack_enemy(true)
-			elif (not boss_mode) and rng.randf() < 0.22:
-				_spawn_attack_enemy(false)
+				if rng.randf() < 0.35:
+					_spawn_attack_enemy(true)
+			else:
+				_spawn_preboss_pattern(state.time)
 
 	if state.time < ENEMY_WAVE_TIME:
 		var phase := _current_wave_phase(state.time)
@@ -1335,18 +1358,22 @@ func _update_enemies(delta: float) -> void:
 					e.t = 0.0
 					e.fired = false
 					e.shoot_cd = rng.randf_range(0.08, 0.18)
+					e.repeat_cd = 0.0
 				else:
 					e.pos += (d0 / max(dist0, 1.0)) * e.enter_speed * delta
 			1:
-				# Single, quick attack (not a sustained bullet-hell pattern), then a short hang time.
 				if not e.fired:
 					e.shoot_cd -= delta
 					if e.shoot_cd <= 0.0:
 						e.fired = true
 						e.t = 0.0
-						_enemy_fire(e)
 				else:
-					if e.t >= ENEMY_POST_FIRE_HANG:
+					e.repeat_cd -= delta
+					if e.repeat_left > 0 and e.repeat_cd <= 0.0:
+						_enemy_fire(e)
+						e.repeat_left -= 1
+						e.repeat_cd = e.repeat_interval
+					if e.repeat_left <= 0 and e.t >= e.attack_time:
 						e.state = 2
 			2:
 				e.pos += e.exit_vel * delta
@@ -1359,8 +1386,11 @@ func _update_enemies(delta: float) -> void:
 func _enemy_spawn_interval(boss_mode: bool) -> float:
 	if boss_mode:
 		return BOSS_ADD_SPAWN_INTERVAL
-	# Before boss, ramp up by phase.
-	return _current_wave_interval(state.time)
+	if state.time < 60.0:
+		return 1.2
+	if state.time < 75.0:
+		return 1.0
+	return 0.9
 
 func _spawn_attack_enemy(is_boss_add: bool) -> void:
 	var e := Enemy.new()
@@ -1395,11 +1425,14 @@ func _spawn_attack_enemy(is_boss_add: bool) -> void:
 	e.pattern = rng.randi_range(0, 2)
 	match e.pattern:
 		0:
-			e.shoot_interval = 0.9 if is_boss_add else 1.1
+			e.pattern = ENEMY_PATTERN_ADD_AIMED
+			_set_enemy_repeat(e, 1, 1.0, ENEMY_POST_FIRE_HANG)
 		1:
-			e.shoot_interval = 1.1 if is_boss_add else 1.3
+			e.pattern = ENEMY_PATTERN_ADD_FAN
+			_set_enemy_repeat(e, 1, 1.0, ENEMY_POST_FIRE_HANG)
 		2:
-			e.shoot_interval = 1.4 if is_boss_add else 1.6
+			e.pattern = ENEMY_PATTERN_ADD_RING
+			_set_enemy_repeat(e, 1, 1.0, ENEMY_POST_FIRE_HANG)
 	enemies.append(e)
 
 func _spawn_enemy_at(pos: Vector2, speed: float, shoot_interval: float) -> void:
@@ -1416,7 +1449,8 @@ func _spawn_enemy_at(pos: Vector2, speed: float, shoot_interval: float) -> void:
 	e.attack_time = 2.2
 	e.shoot_interval = shoot_interval
 	e.shoot_cd = shoot_interval
-	e.pattern = rng.randi_range(0, 2)
+	e.pattern = ENEMY_PATTERN_AIMED
+	_set_enemy_repeat(e, 1, 1.0, ENEMY_POST_FIRE_HANG)
 
 	var tx: float = clampf(pos.x, FIELD_RECT.position.x + 90.0, FIELD_RECT.position.x + FIELD_RECT.size.x - 90.0)
 	var ty := rng.randf_range(140.0, 260.0)
@@ -1424,137 +1458,145 @@ func _spawn_enemy_at(pos: Vector2, speed: float, shoot_interval: float) -> void:
 	e.exit_vel = Vector2(0, -240.0)
 	enemies.append(e)
 
-func _make_boss_intro_overlay(parent: CanvasLayer) -> Control:
-	var overlay := Control.new()
-	overlay.name = "BossIntroOverlay"
-	overlay.anchor_right = 1.0
-	overlay.anchor_bottom = 1.0
-	overlay.size = WINDOW_SIZE
-	overlay.visible = false
-	parent.add_child(overlay)
+func _set_enemy_repeat(e: Enemy, shots: int, interval: float, hang: float) -> void:
+	e.repeat_left = shots
+	e.repeat_interval = interval
+	e.repeat_cd = 0.0
+	e.attack_time = float(shots) * interval + hang
 
-	var dim := ColorRect.new()
-	dim.color = Color(0.0, 0.0, 0.0, 0.92)
-	dim.anchor_right = 1.0
-	dim.anchor_bottom = 1.0
-	dim.mouse_filter = Control.MOUSE_FILTER_STOP
-	overlay.add_child(dim)
-
-	var fallback := TextureRect.new()
-	fallback.name = "FallbackImage"
-	fallback.anchor_right = 1.0
-	fallback.anchor_bottom = 1.0
-	fallback.size = WINDOW_SIZE
-	fallback.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	fallback.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	fallback.visible = false
-	overlay.add_child(fallback)
-
-	var video := VideoStreamPlayer.new()
-	video.name = "IntroVideo"
-	video.anchor_right = 1.0
-	video.anchor_bottom = 1.0
-	video.size = WINDOW_SIZE
-	video.expand = true
-	video.loop = false
-	video.visible = false
-	video.finished.connect(_on_boss_intro_video_finished)
-	overlay.add_child(video)
-
-	ui["boss_intro_video"] = video
-	ui["boss_intro_fallback"] = fallback
-	return overlay
-
-func _start_boss_intro() -> void:
-	# Prevent re-entry.
-	if state.boss_intro_playing or boss != null:
+func _spawn_preboss_pattern(time_sec: float) -> void:
+	state.wave_count += 1
+	var r := rng.randf()
+	if time_sec < 60.0:
+		if r < 0.65:
+			_spawn_pattern_aimed()
+		else:
+			_spawn_pattern_fan()
 		return
-	state.boss_intro_playing = true
-	state.boss_intro_until = 0.0
-
-	# Clean the field for the intro.
-	enemies.clear()
-	for b: Bullet in player_bullets:
-		b.active = false
-	for b2: Bullet in enemy_bullets:
-		b2.active = false
-	for it: Item in items:
-		it.active = false
-
-	var overlay: Control = ui["boss_intro_overlay"]
-	overlay.visible = true
-	ui["pause_overlay"].visible = false
-	ui["title_overlay"].visible = false
-	ui["result_overlay"].visible = false
-	ui["settings_overlay"].visible = false
-
-	var video: VideoStreamPlayer = ui["boss_intro_video"]
-	var fallback: TextureRect = ui["boss_intro_fallback"]
-
-	var stream := load(BOSS_INTRO_VIDEO_PATH)
-	if stream != null:
-		video.stream = stream
-		fallback.visible = false
-		video.visible = true
-		video.play()
+	if time_sec < 75.0:
+		if r < 0.45:
+			_spawn_pattern_aimed()
+		elif r < 0.75:
+			_spawn_pattern_ring()
+		else:
+			_spawn_pattern_cross()
+		return
+	# 75~90s: push spiral + cross, with a little aimed for rhythm.
+	if r < 0.45:
+		_spawn_pattern_spiral()
+	elif r < 0.8:
+		_spawn_pattern_cross()
 	else:
-		_add_log("Boss intro video not supported/missing: " + BOSS_INTRO_VIDEO_PATH)
-		var tex := load(BOSS_INTRO_FALLBACK_IMAGE_PATH)
-		fallback.texture = tex
-		fallback.visible = true
-		video.visible = false
-		state.boss_intro_until = BOSS_INTRO_FALLBACK_DURATION
+		_spawn_pattern_aimed()
 
-func _stop_boss_intro() -> void:
-	if not ui.has("boss_intro_overlay"):
-		return
-	var overlay: Control = ui["boss_intro_overlay"]
-	overlay.visible = false
-	if ui.has("boss_intro_video"):
-		var video: VideoStreamPlayer = ui["boss_intro_video"]
-		video.stop()
-		video.visible = false
-	if ui.has("boss_intro_fallback"):
-		var fallback: TextureRect = ui["boss_intro_fallback"]
-		fallback.visible = false
-	state.boss_intro_playing = false
-	state.boss_intro_until = 0.0
+func _spawn_pattern_aimed() -> void:
+	var e := _spawn_pattern_base(Vector2(rng.randf_range(FIELD_RECT.position.x + 120.0, FIELD_RECT.position.x + FIELD_RECT.size.x - 120.0), -60.0))
+	e.pattern = ENEMY_PATTERN_AIMED
+	_set_enemy_repeat(e, 1, 1.0, ENEMY_POST_FIRE_HANG)
 
-func _update_boss_intro(delta: float) -> void:
-	# Fallback timer path (when video can't be played).
-	if state.boss_intro_until > 0.0:
-		state.boss_intro_until -= delta
-		if state.boss_intro_until <= 0.0:
-			_finish_boss_intro()
-			return
+func _spawn_pattern_fan() -> void:
+	var mode := rng.randi_range(0, 2)
+	var e: Enemy
+	if mode == 0:
+		e = _spawn_pattern_base(Vector2(rng.randf_range(FIELD_RECT.position.x + 140.0, FIELD_RECT.position.x + FIELD_RECT.size.x - 140.0), -60.0))
+		e.fixed_dir = Vector2.DOWN
+	else:
+		var y := rng.randf_range(160.0, 420.0)
+		if mode == 1:
+			e = _spawn_pattern_base(Vector2(FIELD_RECT.position.x - 120.0, y))
+			e.fixed_dir = Vector2.RIGHT
+		else:
+			e = _spawn_pattern_base(Vector2(FIELD_RECT.position.x + FIELD_RECT.size.x + 120.0, y))
+			e.fixed_dir = Vector2.LEFT
+	e.pattern = ENEMY_PATTERN_FAN
+	_set_enemy_repeat(e, 1, 1.0, ENEMY_POST_FIRE_HANG)
 
-func _on_boss_intro_video_finished() -> void:
-	_finish_boss_intro()
+func _spawn_pattern_ring() -> void:
+	var e := _spawn_pattern_base(Vector2(FIELD_RECT.position.x + FIELD_RECT.size.x * 0.5, -60.0))
+	e.pattern = ENEMY_PATTERN_RING
+	_set_enemy_repeat(e, 1, 1.0, ENEMY_POST_FIRE_HANG)
 
-func _finish_boss_intro() -> void:
-	if not state.boss_intro_playing:
-		return
-	_stop_boss_intro()
-	_spawn_boss()
+func _spawn_pattern_spiral() -> void:
+	var e := _spawn_pattern_base(Vector2(FIELD_RECT.position.x + FIELD_RECT.size.x * 0.5, -60.0))
+	e.pattern = ENEMY_PATTERN_SPIRAL
+	e.spiral_angle = rng.randf_range(0.0, 360.0)
+	_set_enemy_repeat(e, 20, 0.12, 0.4)
+
+func _spawn_pattern_cross() -> void:
+	_spawn_cross_unit(Vector2(FIELD_RECT.position.x - 120.0, rng.randf_range(180.0, 420.0)), Vector2(1, 1))
+	_spawn_cross_unit(Vector2(FIELD_RECT.position.x + FIELD_RECT.size.x + 120.0, rng.randf_range(180.0, 420.0)), Vector2(-1, 1))
+
+func _spawn_cross_unit(pos: Vector2, dir: Vector2) -> void:
+	var e := _spawn_pattern_base(pos)
+	e.pattern = ENEMY_PATTERN_CROSS
+	e.fixed_dir = dir.normalized()
+	_set_enemy_repeat(e, 5, 0.8, 0.4)
+
+func _spawn_pattern_base(start_pos: Vector2) -> Enemy:
+	var e := Enemy.new()
+	e.hp = 26.0
+	e.state = 0
+	e.t = 0.0
+	e.pos = start_pos
+	e.fired = false
+	e.enter_speed = 260.0
+
+	if start_pos.y < 0.0:
+		var tx := clampf(start_pos.x, FIELD_RECT.position.x + 90.0, FIELD_RECT.position.x + FIELD_RECT.size.x - 90.0)
+		var ty := rng.randf_range(140.0, 260.0)
+		e.target = Vector2(tx, ty)
+		e.exit_vel = Vector2(0, -240.0)
+	else:
+		var ty2 := clampf(start_pos.y, 160.0, 420.0)
+		if start_pos.x < FIELD_RECT.position.x:
+			e.target = Vector2(FIELD_RECT.position.x + 90.0, ty2)
+			e.exit_vel = Vector2(-250.0, -30.0)
+		else:
+			e.target = Vector2(FIELD_RECT.position.x + FIELD_RECT.size.x - 90.0, ty2)
+			e.exit_vel = Vector2(250.0, -30.0)
+
+	enemies.append(e)
+	return e
 
 func _enemy_fire(e: Enemy) -> void:
 	var dir: Vector2 = (player.pos - e.pos).normalized()
 	var start_pos := e.pos + dir * ENEMY_MUZZLE_OFFSET
 	var base_speed: float = rng.randf_range(380.0, 440.0)
 	match e.pattern:
-		0:
-			# Single aimed shot (fast)
+		ENEMY_PATTERN_ADD_AIMED:
 			_spawn_enemy_bullet(start_pos, dir * base_speed, 6.0)
-		1:
-			# Quick dodge-check: small 2-way spread
+		ENEMY_PATTERN_ADD_FAN:
 			for a2 in [-7.0, 7.0]:
 				var d2 := dir.rotated(deg_to_rad(a2)).normalized()
 				_spawn_enemy_bullet(e.pos + d2 * ENEMY_MUZZLE_OFFSET, d2 * (base_speed - 20.0), 6.0)
-		2:
-			# Narrow 3-way aimed burst (still only once)
+		ENEMY_PATTERN_ADD_RING:
 			for a3 in [-9.0, 0.0, 9.0]:
 				var d3 := dir.rotated(deg_to_rad(a3)).normalized()
 				_spawn_enemy_bullet(e.pos + d3 * ENEMY_MUZZLE_OFFSET, d3 * (base_speed - 40.0), 5.5)
+		ENEMY_PATTERN_AIMED:
+			for a in [-10.0, 0.0, 10.0]:
+				var d := dir.rotated(deg_to_rad(a)).normalized()
+				_spawn_enemy_bullet(e.pos + d * ENEMY_MUZZLE_OFFSET, d * rng.randf_range(160.0, 220.0), 6.0)
+		ENEMY_PATTERN_FAN:
+			var base_dir := e.fixed_dir
+			for ang in [-45.0, -30.0, -15.0, 0.0, 15.0, 30.0, 45.0]:
+				var d2 := base_dir.rotated(deg_to_rad(ang)).normalized()
+				_spawn_enemy_bullet(e.pos + d2 * ENEMY_MUZZLE_OFFSET, d2 * 170.0, 6.0)
+		ENEMY_PATTERN_RING:
+			var n := rng.randi_range(16, 24)
+			var spd := rng.randf_range(140.0, 180.0)
+			for i in range(n):
+				var ang2 := (TAU / float(n)) * float(i)
+				var d3 := Vector2(cos(ang2), sin(ang2))
+				_spawn_enemy_bullet(e.pos + d3 * ENEMY_MUZZLE_OFFSET, d3 * spd, 5.5)
+		ENEMY_PATTERN_SPIRAL:
+			var ang3 := deg_to_rad(e.spiral_angle)
+			var d4 := Vector2(cos(ang3), sin(ang3))
+			e.spiral_angle += 12.0
+			_spawn_enemy_bullet(e.pos + d4 * ENEMY_MUZZLE_OFFSET, d4 * 160.0, 5.5)
+		ENEMY_PATTERN_CROSS:
+			var d5 := e.fixed_dir.normalized()
+			_spawn_enemy_bullet(e.pos + d5 * ENEMY_MUZZLE_OFFSET, d5 * 200.0, 6.0)
 
 func _current_wave_interval(time_sec: float) -> float:
 	if time_sec < WAVE_1_END:
@@ -1818,7 +1860,13 @@ func _check_collisions() -> void:
 
 		if dist <= PLAYER_GRAZE_RADIUS + b.r and not b.grazed:
 			if state.time >= state.graze_lock_until:
-				state.graze = min(state.graze + GRAZE_CHARGE, 1.0)
+				var min_r: float = PLAYER_HIT_RADIUS + b.r
+				var max_r: float = PLAYER_GRAZE_RADIUS + b.r
+				var t := 0.0
+				if max_r > min_r:
+					t = clampf(1.0 - ((dist - min_r) / (max_r - min_r)), 0.0, 1.0)
+				var gain := lerpf(GRAZE_CHARGE * 0.4, GRAZE_CHARGE * 1.6, t)
+				state.graze = min(state.graze + gain, 1.0)
 			b.grazed = true
 
 	for it: Item in items:
@@ -1845,7 +1893,7 @@ func _check_collisions() -> void:
 
 	for i in range(enemies.size() - 1, -1, -1):
 		if enemies[i].hp <= 0.0:
-			_spawn_item(enemies[i].pos, 2)
+			_spawn_item(enemies[i].pos, 3)
 			_add_score(800)
 			enemies.remove_at(i)
 
@@ -1941,6 +1989,15 @@ func _format_time(seconds: float) -> String:
 
 func _add_score(amount: int) -> void:
 	state.score += amount
+	if _power_level() >= 5:
+		if state.hp_score_next <= 0:
+			state.hp_score_next = state.score + 500
+			state.hp_score_step = 500
+		while state.score >= state.hp_score_next:
+			if state.life < state.max_life:
+				state.life += 1
+			state.hp_score_next += state.hp_score_step
+			state.hp_score_step += 300
 	if state.score > state.best_score:
 		state.best_score = state.score
 		_save_score()
