@@ -33,6 +33,9 @@ const PLAYER_SHOT_SFX_CANDIDATES := [
 const PLAYER_SHOT_SFX_MIN_INTERVAL := 0.12
 
 const ENEMY_POST_FIRE_HANG := 0.65
+const HP_SCORE_INITIAL := 2500
+const HP_SCORE_STEP_BASE := 1500
+const HP_SCORE_MULT := 1.6
 
 const ENEMY_PATTERN_ADD_AIMED := 0
 const ENEMY_PATTERN_ADD_FAN := 1
@@ -144,6 +147,7 @@ class GameState:
 	var format_flash_until := 0.0
 	var hp_score_next := 0
 	var hp_score_step := 0
+	var item_attract_until := 0.0
 
 class Bullet:
 	var active := false
@@ -280,10 +284,11 @@ func _process(delta: float) -> void:
 	queue_redraw()
 
 func _draw() -> void:
-	draw_rect(FIELD_RECT, COLOR_FIELD)
 	if tex_bg != null:
 		var center := FIELD_RECT.position + FIELD_RECT.size * 0.5
 		_draw_tex_cover(tex_bg, center, FIELD_RECT.size)
+	else:
+		draw_rect(FIELD_RECT, COLOR_FIELD)
 	draw_rect(FIELD_RECT, COLOR_LINE, false, 2.0)
 
 	for b in player_bullets:
@@ -605,8 +610,10 @@ func _build_ui() -> void:
 
 	ui["result_overlay"] = _make_overlay(ui_layer, "RESULT", [
 		{"label": "Retry", "action": "retry"},
-		{"label": "To Title", "action": "title"}
+		{"label": "To Title", "action": "title"},
+		{"label": "Settings", "action": "settings"}
 	])
+	# result text label will be populated at end of run
 
 	ui["settings_overlay"] = _make_settings_overlay(ui_layer)
 
@@ -816,6 +823,17 @@ func _make_overlay(parent: CanvasLayer, title: String, buttons: Array) -> Contro
 		btn.pressed.connect(_on_menu_action.bind(b.action))
 		list.add_child(btn)
 
+	# Special-case: result overlay gets an info label for score/time/messages
+	if title == "RESULT":
+		var info := Label.new()
+		info.name = "ResultInfo"
+		info.position = Vector2(34, 52)
+		info.size = Vector2(460, 80)
+		info.add_theme_font_size_override("font_size", 18)
+		info.wrap = true
+		panel.add_child(info)
+		ui["result_text"] = info
+
 	return overlay
 
 func _on_menu_action(action: String) -> void:
@@ -859,7 +877,17 @@ func _show_result(clear: bool) -> void:
 	state.has_progress = false
 	if bgm_player != null and bgm_player.playing:
 		bgm_player.stop()
+	# Populate result text with clear/fail details
+	if ui.has("result_text"):
+		var txt: Label = ui["result_text"]
+		if clear:
+			txt.text = "GAME CLEAR\nScore: " + str(state.score) + "\nTime: " + _format_time(state.time) + "\n\nPress any key to return to title."
+		else:
+			txt.text = "GAME OVER\nYou failed the mission.\n\nUse the buttons to Retry, go to Title, or open Settings."
 	ui["result_overlay"].visible = true
+	ui["pause_overlay"].visible = false
+	ui["title_overlay"].visible = false
+	ui["settings_overlay"].visible = false
 	ui["pause_overlay"].visible = false
 	ui["title_overlay"].visible = false
 	ui["settings_overlay"].visible = false
@@ -920,6 +948,19 @@ func _apply_settings() -> void:
 	_apply_audio_settings()
 	_apply_display_settings()
 	_close_settings()
+
+func _unhandled_input(event: InputEvent) -> void:
+	# If cleared, pressing any key returns to title
+	if state.game_over and state.game_cleared:
+		if event is InputEventKey and event.pressed:
+			_show_title_menu()
+			return
+
+	# If title overlay is visible, allow any key or left-click to start the game
+	if ui.has("title_overlay") and ui["title_overlay"].visible:
+		if (event is InputEventKey and event.pressed) or (event is InputEventMouseButton and event.pressed and event.button_index == 1):
+			_start_game(true)
+			return
 
 func _sync_settings_ui() -> void:
 	var bgm_slider: HSlider = ui["settings_bgm"]
@@ -1201,7 +1242,7 @@ func _update_player_shoot(delta: float) -> void:
 	if level >= 4:
 		damage = 8.0
 	if level == 5:
-		damage = 9.0
+		damage = 11.0
 	if _format_active():
 		damage *= 2.0
 
@@ -1235,11 +1276,12 @@ func _shot_angles(level: int) -> Array:
 			# Straight + slight curves left/right.
 			return [-12.0, 0.0, 12.0]
 		4:
-			# Clean 4-way spread.
-			return [-10.0, -4.0, 4.0, 10.0]
+			# Two center shots straight, plus two outer angles.
+			# outer-left, two centers, outer-right so centers sit in the middle
+			return [-12.0, 0.0, 0.0, 12.0]
 		5:
-			# Tight 5-way for stable feel at max level.
-			return [-12.0, -6.0, 0.0, 6.0, 12.0]
+			# Same pattern as level 4, but stronger damage.
+			return [-12.0, 0.0, 0.0, 12.0]
 		_:
 			return [0.0]
 
@@ -1302,17 +1344,12 @@ func _update_bullets(delta: float) -> void:
 	for b: Bullet in enemy_bullets:
 		if not b.active:
 			continue
-		if b.source == BulletSource.BOSS and boss != null and boss.segment <= BOSS_LAST_SEGMENT:
-			var spd: float = b.vel.length()
-			if spd > 1.0:
-				var dir := (player.pos - b.pos).normalized()
-				b.vel = b.vel.lerp(dir * spd, BOSS_BULLET_HOMING)
 		b.pos += b.vel * delta
 		if not FIELD_RECT.has_point(b.pos):
 			b.active = false
 
 func _update_items(delta: float) -> void:
-	var attract: bool = _format_active() or _power_level() == 5
+	var attract: bool = _format_active() or _power_level() == 5 or state.time < state.item_attract_until
 	for it: Item in items:
 		if not it.active:
 			continue
@@ -1472,6 +1509,8 @@ func _spawn_preboss_pattern(time_sec: float) -> void:
 			_spawn_pattern_aimed()
 		else:
 			_spawn_pattern_fan()
+		if rng.randf() < 0.25:
+			_spawn_preboss_extra(time_sec)
 		return
 	if time_sec < 75.0:
 		if r < 0.45:
@@ -1480,6 +1519,8 @@ func _spawn_preboss_pattern(time_sec: float) -> void:
 			_spawn_pattern_ring()
 		else:
 			_spawn_pattern_cross()
+		if rng.randf() < 0.3:
+			_spawn_preboss_extra(time_sec)
 		return
 	# 75~90s: push spiral + cross, with a little aimed for rhythm.
 	if r < 0.45:
@@ -1488,6 +1529,27 @@ func _spawn_preboss_pattern(time_sec: float) -> void:
 		_spawn_pattern_cross()
 	else:
 		_spawn_pattern_aimed()
+	if rng.randf() < 0.35:
+		_spawn_preboss_extra(time_sec)
+
+func _spawn_preboss_extra(time_sec: float) -> void:
+	var r := rng.randf()
+	if time_sec < 60.0:
+		if r < 0.6:
+			_spawn_pattern_aimed()
+		else:
+			_spawn_pattern_fan()
+		return
+	if time_sec < 75.0:
+		if r < 0.4:
+			_spawn_pattern_ring()
+		else:
+			_spawn_pattern_aimed()
+		return
+	if r < 0.5:
+		_spawn_pattern_spiral()
+	else:
+		_spawn_pattern_cross()
 
 func _spawn_pattern_aimed() -> void:
 	var e := _spawn_pattern_base(Vector2(rng.randf_range(FIELD_RECT.position.x + 120.0, FIELD_RECT.position.x + FIELD_RECT.size.x - 120.0), -60.0))
@@ -1576,27 +1638,54 @@ func _enemy_fire(e: Enemy) -> void:
 		ENEMY_PATTERN_AIMED:
 			for a in [-10.0, 0.0, 10.0]:
 				var d := dir.rotated(deg_to_rad(a)).normalized()
-				_spawn_enemy_bullet(e.pos + d * ENEMY_MUZZLE_OFFSET, d * rng.randf_range(160.0, 220.0), 6.0)
+				var spd := rng.randf_range(140.0, 220.0)
+				if rng.randf() < 0.18:
+					spd = rng.randf_range(280.0, 340.0)
+				elif rng.randf() < 0.18:
+					spd = rng.randf_range(110.0, 140.0)
+				_spawn_enemy_bullet(e.pos + d * ENEMY_MUZZLE_OFFSET, d * spd, 6.0)
+			if rng.randf() < 0.22:
+				var fast_dir := (player.pos - e.pos).normalized()
+				_spawn_enemy_bullet(e.pos + fast_dir * ENEMY_MUZZLE_OFFSET, fast_dir * 360.0, 6.0)
 		ENEMY_PATTERN_FAN:
 			var base_dir := e.fixed_dir
 			for ang in [-45.0, -30.0, -15.0, 0.0, 15.0, 30.0, 45.0]:
 				var d2 := base_dir.rotated(deg_to_rad(ang)).normalized()
-				_spawn_enemy_bullet(e.pos + d2 * ENEMY_MUZZLE_OFFSET, d2 * 170.0, 6.0)
+				var spd2 := rng.randf_range(150.0, 190.0)
+				if rng.randf() < 0.15:
+					spd2 = rng.randf_range(260.0, 310.0)
+				elif rng.randf() < 0.15:
+					spd2 = rng.randf_range(110.0, 140.0)
+				_spawn_enemy_bullet(e.pos + d2 * ENEMY_MUZZLE_OFFSET, d2 * spd2, 6.0)
 		ENEMY_PATTERN_RING:
 			var n := rng.randi_range(16, 24)
-			var spd := rng.randf_range(140.0, 180.0)
 			for i in range(n):
 				var ang2 := (TAU / float(n)) * float(i)
 				var d3 := Vector2(cos(ang2), sin(ang2))
-				_spawn_enemy_bullet(e.pos + d3 * ENEMY_MUZZLE_OFFSET, d3 * spd, 5.5)
+				var spd3 := rng.randf_range(140.0, 200.0)
+				if rng.randf() < 0.12:
+					spd3 = rng.randf_range(240.0, 300.0)
+				elif rng.randf() < 0.12:
+					spd3 = rng.randf_range(110.0, 140.0)
+				_spawn_enemy_bullet(e.pos + d3 * ENEMY_MUZZLE_OFFSET, d3 * spd3, 5.5)
 		ENEMY_PATTERN_SPIRAL:
 			var ang3 := deg_to_rad(e.spiral_angle)
 			var d4 := Vector2(cos(ang3), sin(ang3))
 			e.spiral_angle += 12.0
-			_spawn_enemy_bullet(e.pos + d4 * ENEMY_MUZZLE_OFFSET, d4 * 160.0, 5.5)
+			var spd4 := rng.randf_range(140.0, 200.0)
+			if rng.randf() < 0.12:
+				spd4 = rng.randf_range(240.0, 290.0)
+			elif rng.randf() < 0.12:
+				spd4 = rng.randf_range(110.0, 140.0)
+			_spawn_enemy_bullet(e.pos + d4 * ENEMY_MUZZLE_OFFSET, d4 * spd4, 5.5)
 		ENEMY_PATTERN_CROSS:
 			var d5 := e.fixed_dir.normalized()
-			_spawn_enemy_bullet(e.pos + d5 * ENEMY_MUZZLE_OFFSET, d5 * 200.0, 6.0)
+			var spd5 := rng.randf_range(180.0, 220.0)
+			if rng.randf() < 0.2:
+				spd5 = rng.randf_range(260.0, 320.0)
+			elif rng.randf() < 0.2:
+				spd5 = rng.randf_range(120.0, 150.0)
+			_spawn_enemy_bullet(e.pos + d5 * ENEMY_MUZZLE_OFFSET, d5 * spd5, 6.0)
 
 func _current_wave_interval(time_sec: float) -> float:
 	if time_sec < WAVE_1_END:
@@ -1826,6 +1915,8 @@ func _on_boss_break() -> void:
 	boss_stun_until = max(boss_stun_until, state.time + BOSS_STUN_TIME)
 	boss_anim = "stun"
 	boss_anim_t = 0.0
+	# Attract spawned items to player for a short window so they are auto-collected
+	state.item_attract_until = state.time + 2.0
 
 func _check_boss_breaks() -> void:
 	_update_boss_phase()
@@ -1865,8 +1956,10 @@ func _check_collisions() -> void:
 				var t := 0.0
 				if max_r > min_r:
 					t = clampf(1.0 - ((dist - min_r) / (max_r - min_r)), 0.0, 1.0)
-				var gain := lerpf(GRAZE_CHARGE * 0.4, GRAZE_CHARGE * 1.6, t)
+				# Stronger reward for very-close grazes: scale from 0.2x to 2.2x of base
+				var gain := lerpf(GRAZE_CHARGE * 0.2, GRAZE_CHARGE * 2.2, t)
 				state.graze = min(state.graze + gain, 1.0)
+			
 			b.grazed = true
 
 	for it: Item in items:
@@ -1990,14 +2083,15 @@ func _format_time(seconds: float) -> String:
 func _add_score(amount: int) -> void:
 	state.score += amount
 	if _power_level() >= 5:
+		# Slower, scaling HP-award thresholds to avoid rapid life gain.
 		if state.hp_score_next <= 0:
-			state.hp_score_next = state.score + 500
-			state.hp_score_step = 500
+			state.hp_score_next = state.score + HP_SCORE_INITIAL
+			state.hp_score_step = HP_SCORE_STEP_BASE
 		while state.score >= state.hp_score_next:
 			if state.life < state.max_life:
 				state.life += 1
 			state.hp_score_next += state.hp_score_step
-			state.hp_score_step += 300
+			state.hp_score_step = int(float(state.hp_score_step) * HP_SCORE_MULT) + 100
 	if state.score > state.best_score:
 		state.best_score = state.score
 		_save_score()
