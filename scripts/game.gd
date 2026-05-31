@@ -264,6 +264,7 @@ func _ready() -> void:
 	_build_ui()
 	_init_audio()
 	_show_title_menu()
+	queue_redraw()
 	set_process(true)
 
 func _process(delta: float) -> void:
@@ -830,7 +831,7 @@ func _make_overlay(parent: CanvasLayer, title: String, buttons: Array) -> Contro
 		info.position = Vector2(34, 52)
 		info.size = Vector2(460, 80)
 		info.add_theme_font_size_override("font_size", 18)
-		info.wrap = true
+		info.autowrap_mode = TextServer.AUTOWRAP_WORD
 		panel.add_child(info)
 		ui["result_text"] = info
 
@@ -864,6 +865,7 @@ func _show_title_menu() -> void:
 	ui["result_overlay"].visible = false
 	ui["settings_overlay"].visible = false
 	_update_continue_button()
+	queue_redraw()
 
 func _show_pause_menu() -> void:
 	state.paused = true
@@ -891,6 +893,7 @@ func _show_result(clear: bool) -> void:
 	ui["pause_overlay"].visible = false
 	ui["title_overlay"].visible = false
 	ui["settings_overlay"].visible = false
+	queue_redraw()
 
 func _update_continue_button() -> void:
 	var overlay: Control = ui["title_overlay"]
@@ -913,6 +916,7 @@ func _start_game(full_reset: bool) -> void:
 	ui["result_overlay"].visible = false
 	_add_log("Mission started.")
 	_ensure_bgm_playing()
+	queue_redraw()
 
 func _resume_game() -> void:
 	if not state.has_progress or state.game_over:
