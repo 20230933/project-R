@@ -25,6 +25,15 @@ const BOSS_LAST_SEGMENT := 1
 const BOSS_BULLET_HOMING := 0.06
 
 const TEX_BG := "res://배경.png"
+const TEX_TITLE_SCREEN := "res://타이틀 화면.png"
+const TEX_CONTROLS := "res://조작키.png"
+const TEX_ENEMY_SPRITE := "res://잡몹.png"
+const TEX_RESULT_FAIL := "res://게임 실패.png"
+const TEX_RESULT_SUCCESS := "res://게임 성공.png"
+
+const TEX_LUMI_UI_NORMAL := "res://루미 기본.png"
+const TEX_LUMI_UI_HURT := "res://루미 다침.png"
+const TEX_LUMI_UI_CHARGE := "res://루미 차징.png"
 
 const PLAYER_SHOT_SFX_CANDIDATES := [
 	"res://공격 효과음.mp3",
@@ -238,6 +247,16 @@ var tex_hp_off: Texture2D = null
 var tex_lv_on: Texture2D = null
 var tex_lv_off: Texture2D = null
 var tex_bg: Texture2D = null
+var tex_title_screen: Texture2D = null
+var tex_controls: Texture2D = null
+var tex_enemy: Texture2D = null
+
+var tex_result_fail: Texture2D = null
+var tex_result_success: Texture2D = null
+
+var tex_lumi_ui_normal: Texture2D = null
+var tex_lumi_ui_hurt: Texture2D = null
+var tex_lumi_ui_charge: Texture2D = null
 
 var player_frames: Array[Texture2D] = []
 var boss_idle_frames: Array[Texture2D] = []
@@ -268,7 +287,9 @@ func _ready() -> void:
 	set_process(true)
 
 func _process(delta: float) -> void:
+	# Even while paused (title/result/settings), keep drawing the background/UI.
 	if state.paused:
+		queue_redraw()
 		return
 
 	player_anim_t += delta
@@ -285,6 +306,11 @@ func _process(delta: float) -> void:
 	queue_redraw()
 
 func _draw() -> void:
+	# Title screen background
+	if ui.has("title_overlay") and ui["title_overlay"].visible and tex_title_screen != null:
+		_draw_tex_cover(tex_title_screen, WINDOW_SIZE * 0.5, WINDOW_SIZE)
+		return
+
 	if tex_bg != null:
 		var center := FIELD_RECT.position + FIELD_RECT.size * 0.5
 		_draw_tex_cover(tex_bg, center, FIELD_RECT.size)
@@ -312,7 +338,10 @@ func _draw() -> void:
 			draw_circle(it.pos, it.r, COLOR_ITEM)
 
 	for e in enemies:
-		draw_circle(e.pos, 18.0, COLOR_ENEMY)
+		if tex_enemy != null:
+			_draw_tex_centered(tex_enemy, e.pos, 90.0)
+		else:
+			draw_circle(e.pos, 18.0, COLOR_ENEMY)
 
 	if boss != null:
 		_draw_boss_sprite()
@@ -346,6 +375,14 @@ func _load_textures() -> void:
 	tex_lv_on = load(TEX_ICON_LV_ON) as Texture2D
 	tex_lv_off = load(TEX_ICON_LV_OFF) as Texture2D
 	tex_bg = load(TEX_BG) as Texture2D
+	tex_title_screen = load(TEX_TITLE_SCREEN) as Texture2D
+	tex_controls = load(TEX_CONTROLS) as Texture2D
+	tex_enemy = load(TEX_ENEMY_SPRITE) as Texture2D
+	tex_result_fail = load(TEX_RESULT_FAIL) as Texture2D
+	tex_result_success = load(TEX_RESULT_SUCCESS) as Texture2D
+	tex_lumi_ui_normal = load(TEX_LUMI_UI_NORMAL) as Texture2D
+	tex_lumi_ui_hurt = load(TEX_LUMI_UI_HURT) as Texture2D
+	tex_lumi_ui_charge = load(TEX_LUMI_UI_CHARGE) as Texture2D
 
 	player_frames = _split_sheet_columns(tex_lumi_sheet, 5)
 	boss_idle_frames = _split_sheet_columns(tex_boss_idle_sheet, 5)
@@ -513,12 +550,34 @@ func _build_ui() -> void:
 	hud.anchor_right = 1.0
 	hud.anchor_bottom = 1.0
 	ui_layer.add_child(hud)
+	ui["hud_root"] = hud
 
 	var left_panel := ColorRect.new()
 	left_panel.color = Color(0.02, 0.05, 0.09, 1.0)
 	left_panel.size = Vector2(480, 1080)
 	left_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hud.add_child(left_panel)
+
+	# Lumi portrait (left UI) - clipped to a square frame
+	var portrait_frame := Control.new()
+	portrait_frame.name = "LumiPortraitFrame"
+	portrait_frame.position = Vector2(24, 24)
+	portrait_frame.size = Vector2(432, 432)
+	portrait_frame.clip_contents = true
+	portrait_frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	left_panel.add_child(portrait_frame)
+
+	var portrait := TextureRect.new()
+	portrait.name = "LumiPortrait"
+	portrait.texture = tex_lumi_ui_normal
+	portrait.anchor_right = 1.0
+	portrait.anchor_bottom = 1.0
+	portrait.size = portrait_frame.size
+	portrait.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	portrait.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	portrait_frame.add_child(portrait)
+	ui["lumi_portrait"] = portrait
 
 
 	var right_panel := ColorRect.new()
@@ -595,12 +654,7 @@ func _build_ui() -> void:
 	ui["graze_bar"] = graze_bar
 	ui["graze_fill"] = graze_fill
 
-	ui["title_overlay"] = _make_overlay(ui_layer, "TITLE", [
-		{"label": "Game Start", "action": "start"},
-		{"label": "Continue", "action": "continue"},
-		{"label": "Settings", "action": "settings"},
-		{"label": "Exit", "action": "exit"}
-	])
+	ui["title_overlay"] = _make_title_overlay(ui_layer)
 
 	ui["pause_overlay"] = _make_overlay(ui_layer, "PAUSED", [
 		{"label": "Resume", "action": "resume"},
@@ -609,14 +663,10 @@ func _build_ui() -> void:
 		{"label": "To Title", "action": "title"}
 	])
 
-	ui["result_overlay"] = _make_overlay(ui_layer, "RESULT", [
-		{"label": "Retry", "action": "retry"},
-		{"label": "To Title", "action": "title"},
-		{"label": "Settings", "action": "settings"}
-	])
-	# result text label will be populated at end of run
+	ui["result_overlay"] = _make_result_overlay(ui_layer)
 
 	ui["settings_overlay"] = _make_settings_overlay(ui_layer)
+	ui["controls_overlay"] = _make_controls_overlay(ui_layer)
 
 
 func _make_value_panel(parent: Control, bg_tex: Texture2D, title_text: String, value_text: String, title_color: Color) -> Label:
@@ -818,10 +868,20 @@ func _make_overlay(parent: CanvasLayer, title: String, buttons: Array) -> Contro
 	panel.add_child(list)
 
 	for b in buttons:
+		var label_text := ""
+		var action := ""
+		if b is Dictionary:
+			label_text = str((b as Dictionary).get("label", ""))
+			action = str((b as Dictionary).get("action", ""))
+		else:
+			# Fallback
+			label_text = str(b)
+			action = ""
+
 		var btn := Button.new()
-		btn.text = b.label
-		btn.name = b.action
-		btn.pressed.connect(_on_menu_action.bind(b.action))
+		btn.text = label_text
+		btn.name = action
+		btn.pressed.connect(_on_menu_action.bind(action))
 		list.add_child(btn)
 
 	# Special-case: result overlay gets an info label for score/time/messages
@@ -837,12 +897,56 @@ func _make_overlay(parent: CanvasLayer, title: String, buttons: Array) -> Contro
 
 	return overlay
 
+func _make_title_overlay(parent: CanvasLayer) -> Control:
+	# Example-style title: full-screen background + left-side text menu (no dim/panel)
+	var overlay := Control.new()
+	overlay.name = "TITLEOverlay"
+	overlay.anchor_right = 1.0
+	overlay.anchor_bottom = 1.0
+	overlay.size = WINDOW_SIZE
+	overlay.visible = false
+	parent.add_child(overlay)
+
+	var menu := VBoxContainer.new()
+	menu.name = "TitleMenu"
+	# Match the example: move slightly to the right.
+	menu.position = Vector2(150, 560)
+	menu.size = Vector2(520, 360)
+	menu.add_theme_constant_override("separation", 22)
+	overlay.add_child(menu)
+
+	var entries := [
+		{"label": "게임 시작", "action": "start"},
+		{"label": "이어하기", "action": "continue"},
+		{"label": "조작법", "action": "controls"},
+		{"label": "설정", "action": "settings"},
+		{"label": "게임 종료", "action": "exit"}
+	]
+
+	for e in entries:
+		var btn := Button.new()
+		btn.text = str(e.get("label", ""))
+		btn.name = str(e.get("action", ""))
+		btn.flat = true
+		btn.focus_mode = Control.FOCUS_ALL
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.add_theme_font_size_override("font_size", 44)
+		btn.add_theme_color_override("font_color", Color(1, 1, 1, 0.92))
+		btn.add_theme_color_override("font_hover_color", Color(1, 1, 1, 1.0))
+		btn.add_theme_color_override("font_pressed_color", Color(1, 1, 1, 0.88))
+		btn.pressed.connect(_on_menu_action.bind(btn.name))
+		menu.add_child(btn)
+
+	return overlay
+
 func _on_menu_action(action: String) -> void:
 	match action:
 		"start":
 			_start_game(true)
 		"continue":
 			_start_game(false)
+		"controls":
+			_open_controls()
 		"settings":
 			_open_settings()
 		"exit":
@@ -859,11 +963,15 @@ func _on_menu_action(action: String) -> void:
 func _show_title_menu() -> void:
 	state.paused = true
 	state.settings_from = "title"
-	_switch_bgm(BGM_PATH, true)
+	# Title screen must be silent (no music yet)
+	_stop_bgm()
+	if ui.has("hud_root"):
+		(ui["hud_root"] as Control).visible = false
 	ui["title_overlay"].visible = true
 	ui["pause_overlay"].visible = false
 	ui["result_overlay"].visible = false
 	ui["settings_overlay"].visible = false
+	ui["controls_overlay"].visible = false
 	_update_continue_button()
 	queue_redraw()
 
@@ -879,20 +987,25 @@ func _show_result(clear: bool) -> void:
 	state.has_progress = false
 	if bgm_player != null and bgm_player.playing:
 		bgm_player.stop()
-	# Populate result text with clear/fail details
-	if ui.has("result_text"):
-		var txt: Label = ui["result_text"]
-		if clear:
-			txt.text = "GAME CLEAR\nScore: " + str(state.score) + "\nTime: " + _format_time(state.time) + "\n\nPress any key to return to title."
-		else:
-			txt.text = "GAME OVER\nYou failed the mission.\n\nUse the buttons to Retry, go to Title, or open Settings."
+	_stop_bgm()
+	# Hide gameplay HUD; show the example-style result overlay.
+	if ui.has("hud_root"):
+		(ui["hud_root"] as Control).visible = false
+
+	if ui.has("result_bg"):
+		var bg: TextureRect = ui["result_bg"]
+		bg.texture = tex_result_success if clear else tex_result_fail
+	if ui.has("result_best"):
+		(ui["result_best"] as Label).text = _format_int_with_commas(state.best_score)
+	if ui.has("result_score"):
+		(ui["result_score"] as Label).text = _format_int_with_commas(state.score)
+	if ui.has("result_time"):
+		(ui["result_time"] as Label).text = _format_time(state.time)
 	ui["result_overlay"].visible = true
 	ui["pause_overlay"].visible = false
 	ui["title_overlay"].visible = false
 	ui["settings_overlay"].visible = false
-	ui["pause_overlay"].visible = false
-	ui["title_overlay"].visible = false
-	ui["settings_overlay"].visible = false
+	queue_redraw()
 	queue_redraw()
 
 func _update_continue_button() -> void:
@@ -914,7 +1027,13 @@ func _start_game(full_reset: bool) -> void:
 	ui["title_overlay"].visible = false
 	ui["pause_overlay"].visible = false
 	ui["result_overlay"].visible = false
+	ui["settings_overlay"].visible = false
+	ui["controls_overlay"].visible = false
+	if ui.has("hud_root"):
+		(ui["hud_root"] as Control).visible = true
 	_add_log("Mission started.")
+	# Gameplay must always use base BGM
+	_switch_bgm(BGM_PATH, true)
 	_ensure_bgm_playing()
 	queue_redraw()
 
@@ -929,11 +1048,10 @@ func _resume_game() -> void:
 
 func _open_settings() -> void:
 	state.paused = true
-	ui["title_overlay"].visible = false
-	ui["pause_overlay"].visible = false
-	ui["result_overlay"].visible = false
+	# Show only the settings box on top of the current screen (do not hide underlying overlays)
 	ui["settings_overlay"].visible = true
 	_sync_settings_ui()
+	queue_redraw()
 
 func _close_settings() -> void:
 	ui["settings_overlay"].visible = false
@@ -941,6 +1059,19 @@ func _close_settings() -> void:
 		_show_pause_menu()
 	else:
 		_show_title_menu()
+
+func _open_controls() -> void:
+	state.paused = true
+	ui["title_overlay"].visible = false
+	ui["pause_overlay"].visible = false
+	ui["result_overlay"].visible = false
+	ui["settings_overlay"].visible = false
+	ui["controls_overlay"].visible = true
+	queue_redraw()
+
+func _close_controls() -> void:
+	ui["controls_overlay"].visible = false
+	_show_title_menu()
 
 func _apply_settings() -> void:
 	var bgm_slider: HSlider = ui["settings_bgm"]
@@ -954,16 +1085,10 @@ func _apply_settings() -> void:
 	_close_settings()
 
 func _unhandled_input(event: InputEvent) -> void:
-	# If cleared, pressing any key returns to title
-	if state.game_over and state.game_cleared:
-		if event is InputEventKey and event.pressed:
-			_show_title_menu()
-			return
-
-	# If title overlay is visible, allow any key or left-click to start the game
-	if ui.has("title_overlay") and ui["title_overlay"].visible:
-		if (event is InputEventKey and event.pressed) or (event is InputEventMouseButton and event.pressed and event.button_index == 1):
-			_start_game(true)
+	# ESC closes controls overlay
+	if ui.has("controls_overlay") and ui["controls_overlay"].visible:
+		if event is InputEventKey and event.pressed and (event as InputEventKey).keycode == Key.KEY_ESCAPE:
+			_close_controls()
 			return
 
 func _sync_settings_ui() -> void:
@@ -983,8 +1108,9 @@ func _make_settings_overlay(parent: CanvasLayer) -> Control:
 	overlay.visible = false
 	parent.add_child(overlay)
 
+	# No dim: keep current screen visible, show only the settings box.
 	var dim := ColorRect.new()
-	dim.color = Color(0.02, 0.03, 0.04, 0.75)
+	dim.color = Color(0.0, 0.0, 0.0, 0.0)
 	dim.anchor_right = 1.0
 	dim.anchor_bottom = 1.0
 	dim.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -1071,6 +1197,114 @@ func _make_settings_overlay(parent: CanvasLayer) -> Control:
 
 	return overlay
 
+func _make_controls_overlay(parent: CanvasLayer) -> Control:
+	var overlay := Control.new()
+	overlay.name = "ControlsOverlay"
+	overlay.anchor_right = 1.0
+	overlay.anchor_bottom = 1.0
+	overlay.size = WINDOW_SIZE
+	overlay.visible = false
+	parent.add_child(overlay)
+
+	# Fullscreen controls image
+	var img := TextureRect.new()
+	img.name = "ControlsImage"
+	img.texture = tex_controls
+	img.anchor_right = 1.0
+	img.anchor_bottom = 1.0
+	img.size = WINDOW_SIZE
+	img.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	img.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	img.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay.add_child(img)
+
+	# Exit button (bottom-left)
+	var exit_btn := Button.new()
+	exit_btn.name = "ControlsExit"
+	exit_btn.text = "나가기"
+	exit_btn.position = Vector2(36, WINDOW_SIZE.y - 92)
+	exit_btn.size = Vector2(180, 56)
+	exit_btn.pressed.connect(_close_controls)
+	overlay.add_child(exit_btn)
+
+	return overlay
+
+func _make_result_overlay(parent: CanvasLayer) -> Control:
+	# Example-style result screen: fullscreen image + values + two buttons
+	var overlay := Control.new()
+	overlay.name = "RESULTOverlay"
+	overlay.anchor_right = 1.0
+	overlay.anchor_bottom = 1.0
+	overlay.size = WINDOW_SIZE
+	overlay.visible = false
+	parent.add_child(overlay)
+
+	var bg := TextureRect.new()
+	bg.name = "ResultBG"
+	bg.anchor_right = 1.0
+	bg.anchor_bottom = 1.0
+	bg.size = WINDOW_SIZE
+	bg.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	bg.stretch_mode = TextureRect.STRETCH_SCALE
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	overlay.add_child(bg)
+	ui["result_bg"] = bg
+
+	# Values are right-aligned over the image's value slots
+	var best := Label.new()
+	best.name = "BestScore"
+	best.text = "0"
+	best.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	best.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	best.position = Vector2(1080, 575)
+	best.size = Vector2(720, 60)
+	best.add_theme_font_size_override("font_size", 44)
+	overlay.add_child(best)
+	ui["result_best"] = best
+
+	var score := Label.new()
+	score.name = "RunScore"
+	score.text = "0"
+	score.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	score.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	score.position = Vector2(1080, 695)
+	score.size = Vector2(720, 60)
+	score.add_theme_font_size_override("font_size", 44)
+	overlay.add_child(score)
+	ui["result_score"] = score
+
+	var time := Label.new()
+	time.name = "RunTime"
+	time.text = "00:00.00"
+	time.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	time.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	time.position = Vector2(1080, 815)
+	time.size = Vector2(720, 60)
+	time.add_theme_font_size_override("font_size", 44)
+	overlay.add_child(time)
+	ui["result_time"] = time
+
+	# Buttons
+	var retry := Button.new()
+	retry.name = "retry"
+	retry.text = "다시하기"
+	retry.position = Vector2(340, 930)
+	retry.size = Vector2(520, 90)
+	retry.flat = true
+	retry.pressed.connect(_on_menu_action.bind("retry"))
+	overlay.add_child(retry)
+
+	var to_title := Button.new()
+	to_title.name = "title"
+	to_title.text = "타이틀로 이동"
+	to_title.position = Vector2(1060, 930)
+	to_title.size = Vector2(520, 90)
+	to_title.flat = true
+	to_title.pressed.connect(_on_menu_action.bind("title"))
+	overlay.add_child(to_title)
+
+	return overlay
+
 func _init_audio() -> void:
 	bgm_player = AudioStreamPlayer.new()
 	bgm_player.name = "BGM"
@@ -1095,10 +1329,13 @@ func _init_audio() -> void:
 		sfx_shot_player.stream = shot_stream
 		_add_log("SFX loaded: " + chosen_path)
 
-	_switch_bgm(BGM_PATH, true)
+	# Do not start any BGM here; title screen must be silent.
 
 func _switch_bgm(path: String, restart: bool) -> void:
 	if bgm_player == null:
+		return
+	if path == "":
+		_stop_bgm()
 		return
 	var stream := load(path)
 	if stream == null:
@@ -1111,6 +1348,13 @@ func _switch_bgm(path: String, restart: bool) -> void:
 	_apply_audio_settings()
 	if should_restart:
 		bgm_player.play()
+
+func _stop_bgm() -> void:
+	if bgm_player == null:
+		return
+	if bgm_player.playing:
+		bgm_player.stop()
+	bgm_player.stream = null
 
 func _apply_audio_settings() -> void:
 	if bgm_player != null:
@@ -1353,7 +1597,8 @@ func _update_bullets(delta: float) -> void:
 			b.active = false
 
 func _update_items(delta: float) -> void:
-	var attract: bool = _format_active() or _power_level() == 5 or state.time < state.item_attract_until
+	# Items are always auto-attracted (base behavior)
+	var attract: bool = true
 	for it: Item in items:
 		if not it.active:
 			continue
@@ -2048,6 +2293,19 @@ func _update_ui() -> void:
 	if pwr_label != null:
 		pwr_label.text = str(_power_level())
 
+	# Lumi portrait state: hurt during invuln (until right before it ends), else charging when graze full.
+	if ui.has("lumi_portrait"):
+		var portrait: TextureRect = ui["lumi_portrait"]
+		var tex: Texture2D = tex_lumi_ui_normal
+		var inv_left: float = player.inv_until - state.time
+		if inv_left > 0.2 and tex_lumi_ui_hurt != null:
+			tex = tex_lumi_ui_hurt
+		elif state.graze >= 1.0 and tex_lumi_ui_charge != null:
+			tex = tex_lumi_ui_charge
+		elif tex_lumi_ui_normal != null:
+			tex = tex_lumi_ui_normal
+		portrait.texture = tex
+
 	for i in range(ui_life_icons.size()):
 		var icon := ui_life_icons[i]
 		icon.texture = tex_hp_on if i < state.life else tex_hp_off
@@ -2084,18 +2342,20 @@ func _format_time(seconds: float) -> String:
 	var hh: String = String.num_int64(hs).pad_zeros(2)
 	return mm + ":" + ss + "." + hh
 
+func _format_int_with_commas(v: int) -> String:
+	var s := str(max(v, 0))
+	var out := ""
+	var cnt := 0
+	for i in range(s.length() - 1, -1, -1):
+		out = s[i] + out
+		cnt += 1
+		if cnt % 3 == 0 and i != 0:
+			out = "," + out
+	return out
+
 func _add_score(amount: int) -> void:
 	state.score += amount
-	if _power_level() >= 5:
-		# Slower, scaling HP-award thresholds to avoid rapid life gain.
-		if state.hp_score_next <= 0:
-			state.hp_score_next = state.score + HP_SCORE_INITIAL
-			state.hp_score_step = HP_SCORE_STEP_BASE
-		while state.score >= state.hp_score_next:
-			if state.life < state.max_life:
-				state.life += 1
-			state.hp_score_next += state.hp_score_step
-			state.hp_score_step = int(float(state.hp_score_step) * HP_SCORE_MULT) + 100
+	# NOTE: Removed score-based HP auto-fill to prevent the "Level 5 instantly fills HP" bug.
 	if state.score > state.best_score:
 		state.best_score = state.score
 		_save_score()
