@@ -95,6 +95,20 @@ const COLOR_BOSS := Color(0.95, 0.2, 0.2)
 
 const BGM_PATH := "res://base bgm.mp3"
 const BOSS_BGM_PATH := "res://boss bgm.wav"
+const TITLE_BGM_CANDIDATES := [
+	"res://타이틀 음악.mp3",
+	"res://타이틀 음악.wav",
+	"res://타이틀 음악.ogg",
+	"res://타이틀음악.mp3",
+	"res://타이틀음악.wav",
+	"res://타이틀음악.ogg",
+	"res://title bgm.mp3",
+	"res://title bgm.wav",
+	"res://title bgm.ogg",
+	"res://title.mp3",
+	"res://title.wav",
+	"res://title.ogg"
+]
 const DEFAULT_BGM_VOLUME := 0.7
 const DEFAULT_SFX_VOLUME := 0.8
 
@@ -242,6 +256,8 @@ var items: Array[Item] = []
 var ui := {}
 var bgm_player: AudioStreamPlayer = null
 var sfx_shot_player: AudioStreamPlayer = null
+var current_bgm_path := ""
+var cached_title_bgm_path := ""
 
 var ui_life_icons: Array[TextureRect] = []
 var ui_power_icons: Array[TextureRect] = []
@@ -312,6 +328,7 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	_poll_escape_key()
+	_ensure_context_bgm()
 	# Even while paused (title/result/settings), keep drawing the background/UI.
 	if state.paused:
 		queue_redraw()
@@ -843,7 +860,9 @@ func _make_life_panel(parent: Control) -> void:
 	panel.add_child(title)
 
 	var icons := HBoxContainer.new()
-	icons.position = Vector2(34, 76)
+	# Hearts are 100x100 like the power icons, but visually sit lower.
+	# Move only the life row slightly upward to match the power row feel.
+	icons.position = Vector2(34, 64)
 	icons.size = Vector2(HUD_PANEL_SIZE.x - 68.0, 60)
 	icons.add_theme_constant_override("separation", 12)
 	panel.add_child(icons)
@@ -883,9 +902,8 @@ func _make_power_panel(parent: Control) -> void:
 	panel.add_child(title)
 
 	var icons := HBoxContainer.new()
-	# Match the life-heart row width and spacing.
-	# The lightning textures are wider/narrower than the heart textures, so force each slot
-	# into the same 44x44 box instead of letting TextureRect calculate proportional width.
+	# Use exactly the same display box and spacing as the life icons.
+	# The source PNG files are already 100x100, so do not force a separate power-only scale.
 	icons.position = Vector2(34, 76)
 	icons.size = Vector2(HUD_PANEL_SIZE.x - 68.0, 60)
 	icons.add_theme_constant_override("separation", 12)
@@ -896,11 +914,8 @@ func _make_power_panel(parent: Control) -> void:
 		var icon := TextureRect.new()
 		icon.texture = tex_lv_off
 		icon.custom_minimum_size = Vector2(HUD_ICON_SIZE, HUD_ICON_SIZE)
-		icon.size = Vector2(HUD_ICON_SIZE, HUD_ICON_SIZE)
-		icon.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-		icon.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-		icon.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-		icon.stretch_mode = TextureRect.STRETCH_SCALE
+		icon.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+		icon.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 		icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		icons.add_child(icon)
 		ui_power_icons.append(icon)
@@ -1076,8 +1091,8 @@ func _on_menu_action(action: String) -> void:
 func _show_title_menu() -> void:
 	state.paused = true
 	state.settings_from = "title"
-	# Title screen must be silent (no music yet)
-	_stop_bgm()
+	# Main title screen must always play the title music.
+	_play_title_bgm()
 	if ui.has("hud_root"):
 		(ui["hud_root"] as Control).visible = false
 	ui["title_overlay"].visible = true
@@ -1551,7 +1566,47 @@ func _init_audio() -> void:
 		sfx_shot_player.stream = shot_stream
 		_add_log("SFX loaded: " + chosen_path)
 
-	# Do not start any BGM here; title screen must be silent.
+	# BGM starts from _show_title_menu() so returning to title always resets correctly.
+
+func _get_title_bgm_path() -> String:
+	if cached_title_bgm_path != "" and ResourceLoader.exists(cached_title_bgm_path):
+		return cached_title_bgm_path
+	for candidate in TITLE_BGM_CANDIDATES:
+		var p := str(candidate)
+		if ResourceLoader.exists(p):
+			cached_title_bgm_path = p
+			return p
+	return ""
+
+func _play_title_bgm() -> void:
+	var title_path := _get_title_bgm_path()
+	if title_path == "":
+		_add_log("Title BGM not found: put '타이틀 음악.mp3/wav/ogg' in the project root.")
+		_stop_bgm()
+		return
+	_switch_bgm(title_path, false)
+	_ensure_bgm_playing()
+
+func _ensure_context_bgm() -> void:
+	if bgm_player == null:
+		return
+	if ui.has("result_overlay") and (ui["result_overlay"] as Control).visible:
+		return
+	var expected := ""
+	if ui.has("title_overlay") and (ui["title_overlay"] as Control).visible:
+		expected = _get_title_bgm_path()
+	elif ui.has("controls_overlay") and (ui["controls_overlay"] as Control).visible:
+		expected = _get_title_bgm_path()
+	elif ui.has("settings_overlay") and (ui["settings_overlay"] as Control).visible and state.settings_from == "title":
+		expected = _get_title_bgm_path()
+	elif state.game_started and not state.game_over:
+		expected = BOSS_BGM_PATH if boss != null else BGM_PATH
+	if expected == "":
+		return
+	if current_bgm_path != expected or bgm_player.stream == null:
+		_switch_bgm(expected, false)
+	else:
+		_ensure_bgm_playing()
 
 func _switch_bgm(path: String, restart: bool) -> void:
 	if bgm_player == null:
@@ -1559,16 +1614,26 @@ func _switch_bgm(path: String, restart: bool) -> void:
 	if path == "":
 		_stop_bgm()
 		return
+
+	var same_stream := current_bgm_path == path and bgm_player.stream != null
+	if same_stream:
+		_apply_audio_settings()
+		if restart:
+			bgm_player.stop()
+			if state.bgm_volume > 0.0:
+				bgm_player.play()
+		elif state.bgm_volume > 0.0 and not bgm_player.playing:
+			bgm_player.play()
+		return
+
 	var stream := load(path)
 	if stream == null:
 		_add_log("BGM not found: " + path)
 		return
-	var should_restart := restart
-	if bgm_player.stream == stream:
-		should_restart = false
 	bgm_player.stream = stream
+	current_bgm_path = path
 	_apply_audio_settings()
-	if should_restart:
+	if state.bgm_volume > 0.0:
 		bgm_player.play()
 
 func _stop_bgm() -> void:
@@ -1577,6 +1642,7 @@ func _stop_bgm() -> void:
 	if bgm_player.playing:
 		bgm_player.stop()
 	bgm_player.stream = null
+	current_bgm_path = ""
 
 func _apply_audio_settings() -> void:
 	# Slider at 0 should be actual silence, not a tiny remaining volume.
@@ -1587,6 +1653,8 @@ func _apply_audio_settings() -> void:
 		else:
 			bgm_player.stream_paused = false
 			bgm_player.volume_db = linear_to_db(state.bgm_volume)
+			if bgm_player.stream != null and not bgm_player.playing:
+				bgm_player.play()
 	if sfx_shot_player != null:
 		if state.sfx_volume <= 0.0:
 			sfx_shot_player.volume_db = -80.0
@@ -1602,7 +1670,15 @@ func _apply_display_settings() -> void:
 		DisplayServer.window_set_size(Vector2i(int(WINDOW_SIZE.x), int(WINDOW_SIZE.y)), window_id)
 
 func _ensure_bgm_playing() -> void:
-	if bgm_player != null and bgm_player.stream != null and not bgm_player.playing:
+	if bgm_player == null:
+		return
+	if bgm_player.stream == null:
+		return
+	if state.bgm_volume <= 0.0:
+		return
+	if bgm_player.stream_paused:
+		bgm_player.stream_paused = false
+	if not bgm_player.playing:
 		bgm_player.play()
 
 func _reset_state() -> void:
