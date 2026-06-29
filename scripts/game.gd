@@ -1216,9 +1216,12 @@ func _close_controls() -> void:
 func _apply_settings() -> void:
 	var bgm_slider: HSlider = ui["settings_bgm"]
 	var sfx_slider: HSlider = ui["settings_sfx"]
+	var display_option: OptionButton = ui["settings_display"]
 	state.bgm_volume = bgm_slider.value / 100.0
 	state.sfx_volume = sfx_slider.value / 100.0
+	state.fullscreen = display_option.selected == 1
 	_apply_audio_settings()
+	_apply_display_settings()
 	_close_settings()
 
 func _input(event: InputEvent) -> void:
@@ -1316,8 +1319,10 @@ func _update_ingame_title_edit(delta: float) -> void:
 func _sync_settings_ui() -> void:
 	var bgm_slider: HSlider = ui["settings_bgm"]
 	var sfx_slider: HSlider = ui["settings_sfx"]
+	var display_option: OptionButton = ui["settings_display"]
 	bgm_slider.value = state.bgm_volume * 100.0
 	sfx_slider.value = state.sfx_volume * 100.0
+	display_option.select(1 if state.fullscreen else 0)
 
 func _make_settings_overlay(parent: CanvasLayer) -> Control:
 	var overlay := Control.new()
@@ -1338,7 +1343,7 @@ func _make_settings_overlay(parent: CanvasLayer) -> Control:
 
 	var panel := ColorRect.new()
 	panel.color = Color(0.04, 0.07, 0.12, 0.96)
-	panel.size = Vector2(620, 330)
+	panel.size = Vector2(620, 405)
 	panel.position = Vector2((WINDOW_SIZE.x - panel.size.x) * 0.5, (WINDOW_SIZE.y - panel.size.y) * 0.5)
 	panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	overlay.add_child(panel)
@@ -1351,8 +1356,8 @@ func _make_settings_overlay(parent: CanvasLayer) -> Control:
 
 	var list := VBoxContainer.new()
 	list.position = Vector2(24, 88)
-	list.size = Vector2(560, 135)
-	list.add_theme_constant_override("separation", 26)
+	list.size = Vector2(560, 205)
+	list.add_theme_constant_override("separation", 22)
 	panel.add_child(list)
 
 	var bgm_row := HBoxContainer.new()
@@ -1395,8 +1400,27 @@ func _make_settings_overlay(parent: CanvasLayer) -> Control:
 	sfx_row.add_child(sfx_slider)
 	ui["settings_sfx"] = sfx_slider
 
+	var display_row := HBoxContainer.new()
+	display_row.add_theme_constant_override("separation", 18)
+	list.add_child(display_row)
+	var display_label := Label.new()
+	display_label.text = "화면 모드"
+	display_label.custom_minimum_size = Vector2(130, 0)
+	display_label.add_theme_font_size_override("font_size", 24)
+	display_row.add_child(display_label)
+	var display_option := OptionButton.new()
+	display_option.add_item("창 모드")
+	display_option.add_item("전체 화면")
+	display_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	display_option.item_selected.connect(func(index: int) -> void:
+		state.fullscreen = index == 1
+		_apply_display_settings()
+	)
+	display_row.add_child(display_option)
+	ui["settings_display"] = display_option
+
 	var buttons := HBoxContainer.new()
-	buttons.position = Vector2(24, 255)
+	buttons.position = Vector2(24, 330)
 	buttons.size = Vector2(560, 50)
 	buttons.add_theme_constant_override("separation", 12)
 	panel.add_child(buttons)
